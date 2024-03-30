@@ -1,7 +1,7 @@
 //
 //  State.swift
 //
-//  Copyright © 2019 Purgatory Design. Licensed under the MIT License.
+//  Copyright © 2019, 2024 Purgatory Design. Licensed under the MIT License.
 //
 
 import Foundation
@@ -42,6 +42,17 @@ extension X10 {
 
             self.on = isOn
             self.level = level
+        }
+
+        /// Determine if the receiver's state matches a level as specified for a scene.
+        ///
+        /// - Parameter sceneLevel: The scene level to test against.
+        ///
+        /// - Returns: `true` is the level matches this state; `false` otherwise.
+        ///
+        public func matchesSceneLevel(_ sceneLevel: Int) -> Bool {
+            if sceneLevel == 0 && !self.on { return true }
+            return self.on && sceneLevel == self.level
         }
     }
 }

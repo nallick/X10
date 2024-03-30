@@ -1,7 +1,7 @@
 //
 //  Address.swift
 //
-//  Copyright © 2016-2019 Purgatory Design. Licensed under the MIT License.
+//  Copyright © 2016-2019, 2024 Purgatory Design. Licensed under the MIT License.
 //
 
 import Foundation
@@ -48,12 +48,6 @@ extension X10 {
         /// - Throws: Status.invalidNotation
         ///
         public init(_ notation: String) throws {
-			#if os(Linux)
-			var optionalHouseCode: String?
-			#else
-			var optionalHouseCode: NSString?
-			#endif
-
             if notation.count == 1 {
                 guard let house = HouseCode.named(notation) else { throw Status.invalidNotation }
                 self.init(house: house, device: 0)
@@ -61,8 +55,7 @@ extension X10 {
                 let scanner = Scanner(string: notation)
 
                 var device = 0
-                guard scanner.scanUpToCharacters(from: CharacterSet.decimalDigits, into: &optionalHouseCode),
-                    let houseCode = optionalHouseCode,
+                guard let houseCode = scanner.scanUpToCharacters(from: CharacterSet.decimalDigits),
                     let house = HouseCode.named(String(houseCode)),
                     scanner.scanInt(&device), (1...16).contains(device)
                     else { throw Status.invalidNotation }

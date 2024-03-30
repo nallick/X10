@@ -1,7 +1,7 @@
 //
 //  X10.swift
 //
-//  Copyright © 2016-2019 Purgatory Design. Licensed under the MIT License.
+//  Copyright © 2016-2019, 2024 Purgatory Design. Licensed under the MIT License.
 //
 
 import Foundation
@@ -10,6 +10,7 @@ import Foundation
 ///
 public class X10 {
 
+public static var isLogging = false
 	public static let shared = X10()
 
     public static let messageIsAddressFlag: UInt8 = 0x00
@@ -25,6 +26,8 @@ public class X10 {
 
     public static let triggerNotification = NSNotification.Name(rawValue: "X10.Trigger")
     public static let triggerKey = "trigger"
+
+    public static let sceneSyncSource = "X10-SceneSync"
 
     public static var defaultSerialOutputTimeout: TimeInterval = 20.0
 
@@ -53,6 +56,20 @@ public class X10 {
     ///
     public func updateInternalState(for messages: [Message], source: String) {
         self.updateState(for: messages, manageSelection: false, source: source)
+    }
+
+    /// Update the internal X10 state resulting from device level updates without changing the current X10 selection.
+    ///
+    /// - Parameter address: The device address.
+    /// - Parameter level: The device level.
+    /// - Parameter source: The source of the messages (e.g., an interface or broker). Can be used by notifications clients to filter changes.
+    ///
+    public func updateInternalLevel(for address: Address, level: Int, source: String) {
+        let currentState = self.deviceState[address]
+        var newState = currentState ?? State()
+        newState.level = level
+        self.setStateAndNotify(newState, for: address, source: source)
+        if newState != currentState { self.synchronizeScenesWithCurrentDeviceState() }
     }
 
     /// Update the internal X10 state resulting from a series of current messages and change the current X10 selection.
@@ -96,7 +113,7 @@ public class X10 {
     ///
     private func selectDevice(_ address: Address) {
         self.selectedDevices[address.house.index].select(address.device)
-        self.selectedScene = address
+        self.selectedScene = (self.environment.scenes.index(forKey: address) != nil) ? address : nil
 	}
 
     /// Update the internal X10 state resulting from a series of messages and optionally change the current X10 selection.
@@ -125,6 +142,7 @@ public class X10 {
     /// - Parameter source: The source of the state change.
     ///
     private func setStateAndNotify(_ newState: State, for address: Address, source: String) {
+        if X10.isLogging { print("setStateAndNotify \(address) is \(newState.on ? "on" : "off")") }
         self.deviceState.updateValue(newState, forKey: address)
 
         var notificationInfo: [String: Any] = [X10.stateChangeAddressKey: address, X10.stateChangeStateKey: newState, X10.stateChangePowerKey: newState.on, X10.stateChangeSourceKey: source]
@@ -192,13 +210,17 @@ public class X10 {
         let notificationInfo: [String: Any] = [X10.triggerKey: trigger, X10.stateChangeSourceKey: source]
         NotificationCenter.default.post(name: X10.triggerNotification, object: nil, userInfo: notificationInfo)
 
+        var changed = false
         let onState = (command == .allLightsOn)
         for (address, var state) in self.deviceState {
             if self.environment.respondsToCommand(at: address, house: house, command: command) {
                 state.on = onState
                 self.setStateAndNotify(state, for: address, source: source)
+                changed = true
             }
         }
+
+        if changed { self.synchronizeScenesWithCurrentDeviceState() }
     }
 
     /// Update the internal X10 state of the current selection resulting from an X10 selected device power command.
@@ -208,20 +230,28 @@ public class X10 {
     /// - Parameter source: The source of the state change.
     ///
     private func setPowerStateForSelectedDevices(house: HouseCode, onState: Bool, source: String) {
+        var changed = false
+
         for device in self.selectedDevices(in: house) {
             let address = Address(house: house, device: device)
+            guard address != self.selectedScene else { continue }
             var state = self.deviceState[address] ?? State()
             state.on = onState
             self.setStateAndNotify(state, for: address, source: source)
+            changed = true
         }
 
         if let selectedScene = self.selectedScene, selectedScene.house == house {
+            self.setStateAndNotify(State(on: onState), for: selectedScene, source: source)
             self.environment.scenes[selectedScene]?.forEach { sceneMember in
                 let sceneIsOn = (sceneMember.level > 0)
                 let state = State(on: onState && sceneIsOn, level: sceneIsOn ? sceneMember.level : 100)
                 self.setStateAndNotify(state, for: sceneMember.address, source: source)
+                changed = true
             }
         }
+
+        if changed { self.synchronizeScenesWithCurrentDeviceState() }
     }
 
     /// Update the internal X10 state of the current selection resulting from an X10 selected device bright or dim command.
@@ -231,12 +261,15 @@ public class X10 {
     /// - Parameter source: The source of the state change.
     ///
     private func adjustLevelForSelectedDevices(house: HouseCode, by repeatCount: Int, source: String) {
+        var changed = false
+
         let levelDelta = X10.Message.levelDeltaFromRepeatCount(repeatCount)
         for device in self.selectedDevices(in: house) {
             let address = Address(house: house, device: device)
             if self.environment.isDimable(at: address) == true, var state = self.deviceState[address], state.on {
                 state.level = max(0, min(100, state.level + levelDelta))
                 self.setStateAndNotify(state, for: address, source: source)
+                changed = true
             }
         }
 
@@ -245,9 +278,12 @@ public class X10 {
                 if self.environment.isDimable(at: sceneMember.address) == true, var state = self.deviceState[sceneMember.address], state.on {
                     state.level = max(0, min(100, state.level + levelDelta))
                     self.setStateAndNotify(state, for: sceneMember.address, source: source)
+                    changed = true
                 }
             }
         }
+
+        if changed { self.synchronizeScenesWithCurrentDeviceState() }
     }
 
     /// Update the brightness level of the internal X10 state of a single device using the X10 extended level command.
@@ -259,6 +295,7 @@ public class X10 {
     private func setExtendedDeviceLevel(address: Address, level: Int, source: String) {
         if self.environment.isExtended(at: address) == true {
             self.setStateAndNotify(State(on: true, level: level), for: address, source: source)
+            self.synchronizeScenesWithCurrentDeviceState()
         }
     }
 
@@ -269,11 +306,36 @@ public class X10 {
     /// - Parameter source: The source of the state change.
     ///
     private func setPresetDeviceLevelForSelectedDevices(house: HouseCode, level: Int, source: String) {
+        var changed = false
+
         for device in self.selectedDevices(in: house) {
             let address = Address(house: house, device: device)
             if self.environment.isPresetDimable(at: address) == true {
-                let state = State(on: true, level: level)
-                self.setStateAndNotify(state, for: address, source: source)
+                self.setStateAndNotify(State(on: level > 0, level: level), for: address, source: source)
+                changed = true
+            }
+        }
+
+        if changed { self.synchronizeScenesWithCurrentDeviceState() }
+    }
+
+    /// Update the state of all scenes to reflect the current state of each scene's devices.
+    ///
+    private func synchronizeScenesWithCurrentDeviceState() {
+        self.environment.scenes.forEach { scene in
+            var sceneIsOn = true
+            for sceneMember in scene.value {
+                if let state = self.deviceState[sceneMember.address], state.matchesSceneLevel(sceneMember.level) { continue }
+                sceneIsOn = false
+                break
+            }
+
+            if sceneIsOn != self.deviceState[scene.key]?.on ?? false {
+                X10.isLogging = true
+                let description = scene.value.map { "\($0.address): \($0.level), state: \(self.deviceState[$0.address] ?? State())" }
+                print("scene \(scene.key) is \(sceneIsOn ? "on" : "off") -> \(description)")
+                self.setStateAndNotify(State(on: sceneIsOn), for: scene.key, source: X10.sceneSyncSource)
+                X10.isLogging = false
             }
         }
     }

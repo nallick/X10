@@ -1,7 +1,7 @@
 //
 //  Message.swift
 //
-//  Copyright © 2016-2019 Purgatory Design. Licensed under the MIT License.
+//  Copyright © 2016-2019, 2024 Purgatory Design. Licensed under the MIT License.
 //
 
 import Foundation
@@ -68,7 +68,7 @@ extension X10 {
         ///
         public var power: Bool? {
             switch self.type {
-                case .address, .bright(_), .dim(_), .presetDim(_):
+                case .address, .bright(_), .dim(_), .presetDim(_,_):
                     return nil
                 case .command(let code):
                     guard code == .on || code == .off else { return nil }

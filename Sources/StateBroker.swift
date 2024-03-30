@@ -22,6 +22,32 @@ extension X10 {
         case power = "On"
     }
 
+    public struct ParsedTopic {
+        public let address: Address
+        public let value: Int
+        public let variation: TopicVariation?
+        public let command: String
+
+        /// Parse a broker topic and payload.
+        ///
+        /// - Parameter topic: The broker topic.
+        /// - Parameter payload: The broker payload.
+        ///
+        public init?(topic: String, payload: String) {
+            guard let instruction = topic.x10TopicInstruction else { return nil }
+            let splitInstruction = instruction.split(separator: "-").map { String($0) }
+            guard splitInstruction.count == 2,
+                  let address = X10.Address(rawValue: splitInstruction[0]),
+                  let payloadValue = Int(payload)
+                else { return nil }
+
+            self.command = String(splitInstruction[1])
+            self.address = address
+            self.value = payloadValue
+            self.variation = X10.TopicVariation(rawValue: self.command)
+        }
+    }
+
     public static var stateBrokerTopicPrefix = "X10/"
     public static var stateBrokerTopicStatePrefix = X10.stateBrokerTopicPrefix + "State/"
     public static var stateBrokerTopicRequestPrefix = X10.stateBrokerTopicPrefix + "Request/"
@@ -50,24 +76,28 @@ extension X10.Instruction {
     /// - Parameter payload: The broker payload.
     ///
     public init?(topic: String, payload: String) {
-        guard let instruction = topic.x10TopicInstruction else { return nil }
-        let splitInstruction = instruction.split(separator: "-").map { String($0) }
-        guard splitInstruction.count == 2,
-            let address = X10.Address(rawValue: splitInstruction[0]),
-            let payloadValue = Int(payload)
-            else { return nil }
+        guard let parsedTopic = X10.ParsedTopic(topic: topic, payload: payload) else { return nil }
+        self.init(parsedTopic: parsedTopic)
+    }
 
-        let variationString = String(splitInstruction[1])
-        switch X10.TopicVariation(rawValue: variationString) {
+    /// Initialize an instruction with a parsed broker topic.
+    ///
+    /// - Parameter parsedTopic: The parsed broker topic.
+    ///
+    public init?(parsedTopic: X10.ParsedTopic) {
+        switch parsedTopic.variation {
             case .some(.power):
-                self.init(address: address, command: (payloadValue == 0) ? .off : .on)
+                self.init(address: parsedTopic.address, command: (parsedTopic.value == 0) ? .off : .on)
             case .some(.level):
-                guard let message = X10.Message(address: address, level: payloadValue, environment: X10.shared.environment) else { return nil }
-                self.init(address: address, message: message)
+                guard let message = X10.Message(address: parsedTopic.address, level: parsedTopic.value, environment: X10.shared.environment) else { return nil }
+                self.init(address: parsedTopic.address, message: message)
             case .none:
-                guard address.isHouseAddress, let command = X10.CommandCode.named(variationString.camelCased()), command.isHouseCommand else { return nil }
-                let message = X10.Message(house: address.house, command: command)
-                self.init(address: address, message: message)
+                guard parsedTopic.address.isHouseAddress,
+                      let command = X10.CommandCode.named(parsedTopic.command.camelCased()),
+                      command.isHouseCommand
+                    else { return nil }
+                let message = X10.Message(house: parsedTopic.address.house, command: command)
+                self.init(address: parsedTopic.address, message: message)
         }
     }
 }
